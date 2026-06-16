@@ -28,7 +28,7 @@ load_dotenv()
 
 # ---------- НАСТРОЙКИ ----------
 
-BOT_TOKEN = os.getenv("TIKTOK_BOT_TOKEN")  # положи токен в .env файл
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # положи токен в .env файл
 
 ВРЕМЕННАЯ_ПАПКА = "tmp_videos"
 
@@ -114,7 +114,7 @@ async def fallback(message: Message):
 
 async def main():
     if not BOT_TOKEN:
-        raise RuntimeError("Не задан TIKTOK_BOT_TOKEN. Создай файл .env с TIKTOK_BOT_TOKEN=твой_токен")
+        raise RuntimeError("Не задан BOT_TOKEN. Создай файл .env с BOT_TOKEN=твой_токен")
     os.makedirs(ВРЕМЕННАЯ_ПАПКА, exist_ok=True)
     logger.info("Бот запущен")
     await dp.start_polling(bot)
