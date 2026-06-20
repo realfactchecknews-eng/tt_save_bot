@@ -161,22 +161,70 @@ def _quality_keyboard(token: str) -> InlineKeyboardMarkup:
 
 # ── Команды ───────────────────────────────────────────────────────────────────
 
+START_TEXT = """
+🎬 <b>TikTok Save Bot</b>
+
+Скачиваю видео и фото без водяных знаков с:
+• TikTok (видео + фото-слайдшоу)
+• Instagram Reels
+• YouTube Shorts
+
+<b>Как пользоваться:</b>
+Просто отправь ссылку — выбери качество и получи файл.
+
+<b>Команды:</b>
+/start — это сообщение
+/help — список возможностей
+/stats — сколько скачал сегодня
+"""
+
+HELP_TEXT = f"""
+📋 <b>Возможности бота</b>
+
+<b>Поддерживаемые платформы:</b>
+• TikTok — видео и фото-слайдшоу
+• Instagram Reels
+• YouTube Shorts
+
+<b>Качество видео:</b>
+• 📹 HD — максимальное качество
+• 📱 SD — меньше размер, скачивается быстрее
+
+<b>Ограничения:</b>
+• До {DAILY_LIMIT} скачиваний в день
+• Файлы до {MAX_FILE_MB} МБ (ограничение Telegram)
+• Не более {RATE_LIMIT} запросов в минуту
+
+<b>Подпись к файлам:</b>
+Каждый файл подписывается: <i>{CAPTION}</i>
+
+<b>Как пользоваться:</b>
+1. Скопируй ссылку из TikTok / Instagram / YouTube
+2. Отправь её сюда
+3. Выбери HD или SD
+4. Получи файл без водяного знака
+"""
+
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer(
-        "Привет! Пришли ссылку на TikTok, Instagram Reels или YouTube Shorts.\n"
-        "Скачаю видео или фото и отправлю обратно.\n\n"
-        f"Лимит: {DAILY_LIMIT} скачиваний в день.\n"
-        "Команда /stats — посмотреть свою статистику."
-    )
+    await message.answer(START_TEXT, parse_mode="HTML")
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    await message.answer(HELP_TEXT, parse_mode="HTML")
+
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
     count = db_today_count(message.from_user.id)
     remaining = DAILY_LIMIT - count
     await message.answer(
-        f"Сегодня скачано: {count} из {DAILY_LIMIT}.\n"
-        f"Осталось: {remaining}."
+        f"📊 <b>Твоя статистика на сегодня</b>\n\n"
+        f"Скачано: {count} из {DAILY_LIMIT}\n"
+        f"Осталось: {remaining}",
+        parse_mode="HTML"
     )
 
 
@@ -223,7 +271,8 @@ async def handle_quality_cb(callback: CallbackQuery):
 @dp.message()
 async def fallback(message: Message):
     await message.answer(
-        "Пришли ссылку на TikTok, Instagram Reels или YouTube Shorts, и я скачаю его для тебя."
+        "Пришли ссылку на TikTok, Instagram Reels или YouTube Shorts — скачаю без водяного знака.\n"
+        "Команда /help — список всех возможностей."
     )
 
 
