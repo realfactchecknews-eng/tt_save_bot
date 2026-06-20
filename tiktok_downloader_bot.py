@@ -23,13 +23,14 @@ import shutil
 import sqlite3
 import time
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, FSInputFile, InputMediaPhoto,
     CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    LabeledPrice, PreCheckoutQuery,
 )
 from aiogram.filters import Command
 from dotenv import load_dotenv
@@ -38,16 +39,18 @@ load_dotenv()
 
 # ── Конфигурация ──────────────────────────────────────────────────────────────
 
-BOT_TOKEN   = os.getenv("BOT_TOKEN")
-TMP_DIR     = "tmp_media"
-DB_FILE     = "bot.db"
-LOG_FILE    = "bot.log"
-CAPTION     = "Скачано с помощью @TikTok_SaveVideo_ForFree_bot"
-MAX_FILE_MB = 50          # Telegram ограничение для Bot API
-DL_TIMEOUT  = 90          # секунд на скачивание одного файла
-RATE_LIMIT  = 3           # максимум запросов в минуту с одного пользователя
-DAILY_LIMIT = 10          # скачиваний в день на пользователя
-WORKERS     = 3           # параллельных скачиваний
+BOT_TOKEN          = os.getenv("BOT_TOKEN")
+TMP_DIR            = "tmp_media"
+DB_FILE            = "bot.db"
+LOG_FILE           = "bot.log"
+CAPTION            = "Скачано с помощью @TikTok_SaveVideo_ForFree_bot"
+MAX_FILE_MB        = 50
+DL_TIMEOUT         = 90
+RATE_LIMIT         = 3
+DAILY_LIMIT        = 10
+WORKERS            = 3
+SUBSCRIPTION_PRICE = 99   # Telegram Stars
+SUBSCRIPTION_DAYS  = 30
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 VIDEO_EXTS = (".mp4", ".webm", ".mov")
@@ -83,6 +86,12 @@ def db_init():
                 PRIMARY KEY (user_id, day)
             )
         """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                user_id    INTEGER PRIMARY KEY,
+                expires_at TEXT NOT NULL
+            )
+        """)
 
 def db_today_count(user_id: int) -> int:
     with sqlite3.connect(DB_FILE) as con:
@@ -98,6 +107,32 @@ def db_increment(user_id: int):
             INSERT INTO downloads (user_id, day, count) VALUES (?,?,1)
             ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1
         """, (user_id, str(date.today())))
+
+def db_is_subscribed(user_id: int) -> bool:
+    with sqlite3.connect(DB_FILE) as con:
+        row = con.execute(
+            "SELECT expires_at FROM subscriptions WHERE user_id=?", (user_id,)
+        ).fetchone()
+    return bool(row and row[0] >= str(date.today()))
+
+def db_sub_expiry(user_id: int) -> Optional[str]:
+    with sqlite3.connect(DB_FILE) as con:
+        row = con.execute(
+            "SELECT expires_at FROM subscriptions WHERE user_id=?", (user_id,)
+        ).fetchone()
+    return row[0] if row else None
+
+def db_activate_subscription(user_id: int):
+    expiry = str(date.today() + timedelta(days=SUBSCRIPTION_DAYS))
+    with sqlite3.connect(DB_FILE) as con:
+        con.execute("""
+            INSERT INTO subscriptions (user_id, expires_at) VALUES (?,?)
+            ON CONFLICT(user_id) DO UPDATE SET expires_at=
+                CASE
+                    WHEN expires_at >= date('now') THEN date(expires_at, '+30 days')
+                    ELSE ?
+                END
+        """, (user_id, expiry, expiry))
 
 # ── Rate limiter (в памяти) ───────────────────────────────────────────────────
 
@@ -148,7 +183,6 @@ bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
 
 task_queue: asyncio.Queue = asyncio.Queue()
-# token -> (url, user_id, original_message, created_at)
 _pending: dict[str, tuple] = {}
 
 
@@ -158,24 +192,31 @@ def _quality_keyboard(token: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="📱 SD (быстрее)", callback_data=f"dl:sd:{token}"),
     ]])
 
+def _subscribe_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text=f"⭐ Подписка — {SUBSCRIPTION_PRICE} звёзд / месяц",
+            callback_data="buy_sub"
+        ),
+    ]])
 
-# ── Команды ───────────────────────────────────────────────────────────────────
+# ── Тексты ───────────────────────────────────────────────────────────────────
 
-START_TEXT = """
+START_TEXT = f"""
 🎬 <b>TikTok Save Bot</b>
 
-Скачиваю видео и фото без водяных знаков с:
+Скачиваю видео и фото <b>без водяных знаков</b> с:
 • TikTok (видео + фото-слайдшоу)
 • Instagram Reels
 • YouTube Shorts
 
-<b>Как пользоваться:</b>
-Просто отправь ссылку — выбери качество и получи файл.
+<b>Бесплатно:</b> {DAILY_LIMIT} скачиваний в день
+<b>Подписка ⭐:</b> безлимит за {SUBSCRIPTION_PRICE} звёзд / месяц
 
 <b>Команды:</b>
-/start — это сообщение
-/help — список возможностей
-/stats — сколько скачал сегодня
+/help — все возможности
+/subscribe — оформить подписку
+/stats — моя статистика
 """
 
 HELP_TEXT = f"""
@@ -190,13 +231,15 @@ HELP_TEXT = f"""
 • 📹 HD — максимальное качество
 • 📱 SD — меньше размер, скачивается быстрее
 
-<b>Ограничения:</b>
-• До {DAILY_LIMIT} скачиваний в день
-• Файлы до {MAX_FILE_MB} МБ (ограничение Telegram)
+<b>Бесплатный план:</b>
+• {DAILY_LIMIT} скачиваний в день
+• Файлы до {MAX_FILE_MB} МБ
 • Не более {RATE_LIMIT} запросов в минуту
 
-<b>Подпись к файлам:</b>
-Каждый файл подписывается: <i>{CAPTION}</i>
+<b>Подписка ⭐ — {SUBSCRIPTION_PRICE} звёзд / месяц:</b>
+• Безлимитные скачивания
+• Приоритет в очереди
+• Подписка суммируется при продлении
 
 <b>Как пользоваться:</b>
 1. Скопируй ссылку из TikTok / Instagram / YouTube
@@ -205,6 +248,14 @@ HELP_TEXT = f"""
 4. Получи файл без водяного знака
 """
 
+LIMIT_TEXT = (
+    f"😔 Бесплатный лимит исчерпан — сегодня уже {DAILY_LIMIT} скачиваний.\n\n"
+    f"Оформи подписку за <b>{SUBSCRIPTION_PRICE} ⭐ звёзд в месяц</b> "
+    f"и скачивай <b>без ограничений</b>!\n\n"
+    f"Или возвращайся завтра — лимит обнуляется каждый день."
+)
+
+# ── Команды ───────────────────────────────────────────────────────────────────
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -216,17 +267,51 @@ async def cmd_help(message: Message):
     await message.answer(HELP_TEXT, parse_mode="HTML")
 
 
+@dp.message(Command("subscribe"))
+async def cmd_subscribe(message: Message):
+    user_id = message.from_user.id
+    if db_is_subscribed(user_id):
+        expiry = db_sub_expiry(user_id)
+        await message.answer(
+            f"⭐ У тебя уже активна подписка до <b>{expiry}</b>.\n"
+            f"Можешь продлить — дни суммируются!",
+            reply_markup=_subscribe_keyboard(),
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(
+            f"⭐ <b>Подписка TikTok Save Bot</b>\n\n"
+            f"• Безлимитные скачивания\n"
+            f"• Срок: {SUBSCRIPTION_DAYS} дней\n"
+            f"• Стоимость: {SUBSCRIPTION_PRICE} звёзд Telegram\n\n"
+            f"Звёзды можно купить прямо в Telegram — никаких карт не нужно.",
+            reply_markup=_subscribe_keyboard(),
+            parse_mode="HTML"
+        )
+
+
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
-    count = db_today_count(message.from_user.id)
-    remaining = DAILY_LIMIT - count
-    await message.answer(
-        f"📊 <b>Твоя статистика на сегодня</b>\n\n"
-        f"Скачано: {count} из {DAILY_LIMIT}\n"
-        f"Осталось: {remaining}",
-        parse_mode="HTML"
-    )
+    user_id = message.from_user.id
+    count = db_today_count(user_id)
+    subscribed = db_is_subscribed(user_id)
 
+    if subscribed:
+        expiry = db_sub_expiry(user_id)
+        text = (
+            f"📊 <b>Твоя статистика</b>\n\n"
+            f"⭐ Подписка активна до <b>{expiry}</b>\n"
+            f"Скачиваний сегодня: {count} (без ограничений)"
+        )
+    else:
+        remaining = max(0, DAILY_LIMIT - count)
+        text = (
+            f"📊 <b>Твоя статистика на сегодня</b>\n\n"
+            f"Скачано: {count} из {DAILY_LIMIT}\n"
+            f"Осталось: {remaining}\n\n"
+            f"⭐ Хочешь безлимит? /subscribe"
+        )
+    await message.answer(text, parse_mode="HTML")
 
 # ── Обработка ссылок ──────────────────────────────────────────────────────────
 
@@ -240,10 +325,8 @@ async def handle_link(message: Message):
         )
         return
 
-    if db_today_count(user_id) >= DAILY_LIMIT:
-        await message.answer(
-            f"Достигнут лимит {DAILY_LIMIT} скачиваний на сегодня. Возвращайся завтра!"
-        )
+    if not db_is_subscribed(user_id) and db_today_count(user_id) >= DAILY_LIMIT:
+        await message.answer(LIMIT_TEXT, reply_markup=_subscribe_keyboard(), parse_mode="HTML")
         return
 
     url = URL_RE.search(message.text).group(0)
@@ -268,11 +351,37 @@ async def handle_quality_cb(callback: CallbackQuery):
     await callback.answer()
 
 
-@dp.message()
-async def fallback(message: Message):
+# ── Telegram Stars: покупка подписки ─────────────────────────────────────────
+
+@dp.callback_query(F.data == "buy_sub")
+async def handle_buy_sub(callback: CallbackQuery):
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title="Подписка TikTok Save Bot",
+        description=f"Безлимитные скачивания на {SUBSCRIPTION_DAYS} дней",
+        payload="monthly_sub",
+        currency="XTR",
+        prices=[LabeledPrice(label=f"Подписка на {SUBSCRIPTION_DAYS} дней", amount=SUBSCRIPTION_PRICE)],
+    )
+    await callback.answer()
+
+
+@dp.pre_checkout_query()
+async def pre_checkout(query: PreCheckoutQuery):
+    await query.answer(ok=True)
+
+
+@dp.message(F.successful_payment)
+async def on_payment(message: Message):
+    user_id = message.from_user.id
+    db_activate_subscription(user_id)
+    expiry = db_sub_expiry(user_id)
+    logger.info("Подписка оплачена: user_id=%s, expires=%s", user_id, expiry)
     await message.answer(
-        "Пришли ссылку на TikTok, Instagram Reels или YouTube Shorts — скачаю без водяного знака.\n"
-        "Команда /help — список всех возможностей."
+        f"🎉 <b>Спасибо! Подписка активирована.</b>\n\n"
+        f"⭐ Действует до: <b>{expiry}</b>\n"
+        f"Теперь скачивай без ограничений — просто отправляй ссылки!",
+        parse_mode="HTML"
     )
 
 
@@ -294,7 +403,6 @@ async def worker():
                 )
                 continue
 
-            # Проверка размера файла
             too_big = [f for f in files if os.path.getsize(f) > MAX_FILE_MB * 1024 * 1024]
             if too_big:
                 await status_msg.edit_text(
@@ -319,10 +427,17 @@ async def worker():
                 await orig_msg.answer_video(FSInputFile(videos[0]), caption=CAPTION)
 
             db_increment(user_id)
-            remaining = DAILY_LIMIT - db_today_count(user_id)
-            await status_msg.edit_text(
-                f"Готово! ✅  Осталось скачиваний сегодня: {remaining}/{DAILY_LIMIT}"
-            )
+
+            if db_is_subscribed(user_id):
+                await status_msg.edit_text("Готово! ✅  (⭐ подписка — безлимит)")
+            else:
+                remaining = max(0, DAILY_LIMIT - db_today_count(user_id))
+                footer = (
+                    f"Осталось сегодня: {remaining}/{DAILY_LIMIT}"
+                    if remaining > 0 else
+                    f"Лимит на сегодня исчерпан — /subscribe для безлимита ⭐"
+                )
+                await status_msg.edit_text(f"Готово! ✅  {footer}")
 
         except Exception as exc:
             logger.exception("Ошибка при обработке %s: %s", url, exc)
@@ -333,6 +448,16 @@ async def worker():
         finally:
             await asyncio.to_thread(shutil.rmtree, folder, ignore_errors=True)
             task_queue.task_done()
+
+
+# ── Fallback ──────────────────────────────────────────────────────────────────
+
+@dp.message()
+async def fallback(message: Message):
+    await message.answer(
+        "Пришли ссылку на TikTok, Instagram Reels или YouTube Shorts — скачаю без водяного знака.\n"
+        "Команда /help — список всех возможностей."
+    )
 
 
 # ── Точка входа ───────────────────────────────────────────────────────────────
