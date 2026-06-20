@@ -33,6 +33,7 @@ from aiogram.types import (
     Message, FSInputFile, InputMediaPhoto,
     CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     LabeledPrice, PreCheckoutQuery,
+    ReplyKeyboardMarkup, KeyboardButton,
 )
 from aiogram.filters import Command
 from dotenv import load_dotenv
@@ -189,6 +190,16 @@ task_queue: asyncio.Queue = asyncio.Queue()
 _pending: dict[str, tuple] = {}
 
 
+def _main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="⭐ Подписка"), KeyboardButton(text="📊 Статистика")],
+            [KeyboardButton(text="📋 Помощь"),   KeyboardButton(text="ℹ️ О боте")],
+        ],
+        resize_keyboard=True,
+        persistent=True,
+    )
+
 def _quality_keyboard(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="📹 HD",            callback_data=f"dl:hd:{token}"),
@@ -262,7 +273,7 @@ LIMIT_TEXT = (
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer(START_TEXT, parse_mode="HTML")
+    await message.answer(START_TEXT, parse_mode="HTML", reply_markup=_main_keyboard())
 
 
 @dp.message(Command("help"))
@@ -292,6 +303,22 @@ async def cmd_subscribe(message: Message):
             parse_mode="HTML"
         )
 
+
+@dp.message(F.text == "⭐ Подписка")
+async def btn_subscribe(message: Message):
+    await cmd_subscribe(message)
+
+@dp.message(F.text == "📊 Статистика")
+async def btn_stats(message: Message):
+    await cmd_stats(message)
+
+@dp.message(F.text == "📋 Помощь")
+async def btn_help(message: Message):
+    await cmd_help(message)
+
+@dp.message(F.text == "ℹ️ О боте")
+async def btn_about(message: Message):
+    await message.answer(START_TEXT, parse_mode="HTML", reply_markup=_main_keyboard())
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
@@ -435,12 +462,34 @@ async def worker():
                 await status_msg.edit_text("Готово! ✅  (⭐ подписка — безлимит)")
             else:
                 remaining = max(0, DAILY_LIMIT - db_today_count(user_id))
-                footer = (
-                    f"Осталось сегодня: {remaining}/{DAILY_LIMIT}"
-                    if remaining > 0 else
-                    f"Лимит на сегодня исчерпан — /subscribe для безлимита ⭐"
-                )
-                await status_msg.edit_text(f"Готово! ✅  {footer}")
+                if remaining == 0:
+                    await status_msg.edit_text(
+                        f"Готово! ✅\n\n"
+                        f"😔 Бесплатный лимит исчерпан.\n"
+                        f"Оформи подписку за <b>{SUBSCRIPTION_PRICE} ⭐</b> и скачивай без ограничений!",
+                        parse_mode="HTML",
+                        reply_markup=_subscribe_keyboard()
+                    )
+                elif remaining == 1:
+                    await status_msg.edit_text(
+                        f"Готово! ✅  Остался <b>1 бесплатный</b> запрос на сегодня.\n\n"
+                        f"⭐ Подписка за {SUBSCRIPTION_PRICE} звёзд — безлимит навсегда!",
+                        parse_mode="HTML",
+                        reply_markup=_subscribe_keyboard()
+                    )
+                elif remaining == 2:
+                    await status_msg.edit_text(
+                        f"Готово! ✅  Осталось <b>{remaining}</b> бесплатных запроса.\n\n"
+                        f"⭐ Не хочешь считать? Подписка за {SUBSCRIPTION_PRICE} звёзд / месяц!",
+                        parse_mode="HTML",
+                        reply_markup=_subscribe_keyboard()
+                    )
+                else:
+                    await status_msg.edit_text(
+                        f"Готово! ✅  Осталось сегодня: {remaining}/{DAILY_LIMIT}\n"
+                        f"⭐ <a href='https://t.me/MellSaveBot?start=sub'>Безлимит за {SUBSCRIPTION_PRICE} звёзд / мес</a>",
+                        parse_mode="HTML"
+                    )
 
         except Exception as exc:
             logger.exception("Ошибка при обработке %s: %s", url, exc)
@@ -458,8 +507,8 @@ async def worker():
 @dp.message()
 async def fallback(message: Message):
     await message.answer(
-        "Пришли ссылку на TikTok, Instagram Reels или YouTube Shorts — скачаю без водяного знака.\n"
-        "Команда /help — список всех возможностей."
+        "Пришли ссылку на TikTok, Instagram Reels или YouTube Shorts — скачаю без водяного знака.",
+        reply_markup=_main_keyboard()
     )
 
 
