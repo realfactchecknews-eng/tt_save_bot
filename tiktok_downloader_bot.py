@@ -13,6 +13,8 @@ Telegram бот для скачивания видео и фото с TikTok, In
 """
 
 import os
+import sys
+import atexit
 import asyncio
 import subprocess
 import logging
@@ -51,6 +53,7 @@ DAILY_LIMIT        = 10
 WORKERS            = 3
 SUBSCRIPTION_PRICE = 99   # Telegram Stars
 SUBSCRIPTION_DAYS  = 30
+PID_FILE           = "bot.pid"
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 VIDEO_EXTS = (".mp4", ".webm", ".mov")
@@ -462,7 +465,24 @@ async def fallback(message: Message):
 
 # ── Точка входа ───────────────────────────────────────────────────────────────
 
+def acquire_pid_lock():
+    if os.path.exists(PID_FILE):
+        try:
+            old_pid = int(open(PID_FILE).read().strip())
+            os.kill(old_pid, 0)  # проверяем, жив ли процесс
+            print(f"[ОШИБКА] Бот уже запущен (PID {old_pid}).")
+            print(f"         Останови его командой:  kill {old_pid}")
+            sys.exit(1)
+        except (ProcessLookupError, ValueError):
+            os.remove(PID_FILE)  # устаревший файл — удаляем
+
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    atexit.register(lambda: os.path.exists(PID_FILE) and os.remove(PID_FILE))
+
+
 async def main():
+    acquire_pid_lock()
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN не задан. Создай .env файл с BOT_TOKEN=твой_токен")
     setup_logging()
