@@ -278,7 +278,7 @@ async def cmd_start(message: Message):
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
-    await message.answer(HELP_TEXT, parse_mode="HTML")
+    await message.answer(HELP_TEXT, parse_mode="HTML", reply_markup=_subscribe_keyboard())
 
 
 @dp.message(Command("subscribe"))
