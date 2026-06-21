@@ -278,7 +278,8 @@ async def cmd_start(message: Message):
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
-    await message.answer(HELP_TEXT, parse_mode="HTML", reply_markup=_subscribe_keyboard())
+    kb = None if db_is_subscribed(message.from_user.id) else _subscribe_keyboard()
+    await message.answer(HELP_TEXT, parse_mode="HTML", reply_markup=kb)
 
 
 @dp.message(Command("subscribe"))
