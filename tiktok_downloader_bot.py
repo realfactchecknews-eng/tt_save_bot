@@ -662,6 +662,17 @@ async def main():
     db_init()
     os.makedirs(TMP_DIR, exist_ok=True)
 
+    # Записываем cookies из env var (удобнее чем загружать файл на сервер)
+    cookies_b64 = os.getenv("COOKIES_B64")
+    if cookies_b64 and not os.path.exists(COOKIES_FILE):
+        import base64
+        try:
+            with open(COOKIES_FILE, "wb") as f:
+                f.write(base64.b64decode(cookies_b64))
+            logger.info("cookies.txt записан из COOKIES_B64")
+        except Exception as e:
+            logger.warning("Не удалось записать cookies из COOKIES_B64: %s", e)
+
     # Обновляем yt-dlp через pip (не через GitHub чтобы избежать rate limit)
     logger.info("Обновляю yt-dlp...")
     upd = subprocess.run(
