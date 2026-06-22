@@ -154,7 +154,9 @@ def rate_limited(user_id: int) -> bool:
 
 # ── Скачивание через yt-dlp ───────────────────────────────────────────────────
 
-COOKIES_FILE = "cookies.txt"  # экспорт cookies из браузера — решает блокировку TikTok/YouTube
+# Ищем cookies.txt: сначала в общем хранилище bothost.ru, затем локально
+_SHARED_COOKIES = os.path.join(os.getenv("SHARED_DIR", "/app/shared"), "cookies.txt")
+COOKIES_FILE = _SHARED_COOKIES if os.path.exists(_SHARED_COOKIES) else "cookies.txt"
 PROXY        = os.getenv("PROXY")  # например: socks5://user:pass@host:port или http://host:port
 
 
@@ -662,20 +664,29 @@ async def main():
     db_init()
     os.makedirs(TMP_DIR, exist_ok=True)
 
-    # Записываем cookies из env var при каждом старте (перезаписываем всегда)
-    import base64
+    # Записываем cookies из env var при каждом старте
+    import base64 as _b64
     cookies_b64 = os.getenv("COOKIES_B64", "").strip()
     if cookies_b64:
-        try:
-            # urlsafe_b64decode избегает повреждения символов + и / в веб-формах
-            raw = base64.urlsafe_b64decode(cookies_b64 + "==")
-            with open(COOKIES_FILE, "w", encoding="utf-8") as f:
-                f.write(raw.decode("utf-8"))
-            logger.info("cookies.txt обновлён из COOKIES_B64 (%d байт)", len(raw))
-        except Exception as e:
-            logger.warning("Не удалось записать cookies из COOKIES_B64: %s", e)
+        raw = None
+        for decoder in (_b64.urlsafe_b64decode, _b64.b64decode):
+            try:
+                raw = decoder(cookies_b64 + "==")
+                text = raw.decode("utf-8", errors="ignore")
+                if "tiktok.com" in text:  # проверяем что декодировали верно
+                    with open("cookies.txt", "w", encoding="utf-8") as f:
+                        f.write(text)
+                    logger.info("cookies.txt записан из COOKIES_B64 (%d байт)", len(raw))
+                    break
+            except Exception:
+                continue
+        else:
+            # Ни один метод не сработал — удаляем повреждённый файл чтобы yt-dlp не падал
+            if os.path.exists("cookies.txt"):
+                os.remove("cookies.txt")
+            logger.warning("COOKIES_B64 повреждён — cookies не используются")
     elif os.path.exists(COOKIES_FILE):
-        logger.info("cookies.txt найден на диске")
+        logger.info("cookies.txt найден: %s", COOKIES_FILE)
 
     # Обновляем yt-dlp через pip (не через GitHub чтобы избежать rate limit)
     logger.info("Обновляю yt-dlp...")
