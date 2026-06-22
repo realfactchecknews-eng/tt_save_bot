@@ -155,17 +155,32 @@ def rate_limited(user_id: int) -> bool:
 
 def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
     os.makedirs(folder, exist_ok=True)
-    fmt = (
-        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-        if quality == "hd" else
-        "worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst"
-    )
+
+    if quality == "hd":
+        # Сначала пробуем готовый mp4 со звуком, потом склейку через ffmpeg
+        fmt = (
+            "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
+            "/best[ext=mp4][height<=1080]"
+            "/bestvideo+bestaudio"
+            "/best"
+        )
+    else:
+        fmt = (
+            "best[ext=mp4][height<=480]"
+            "/best[height<=480]"
+            "/worst[ext=mp4]"
+            "/worst"
+        )
+
     cmd = [
         "yt-dlp", url,
         "-o", os.path.join(folder, "%(autonumber)04d.%(ext)s"),
         "--no-warnings", "--no-playlist",
         "-f", fmt,
         "--merge-output-format", "mp4",
+        "--socket-timeout", "30",
+        "--retries", "3",
+        "--no-part",
     ]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=DL_TIMEOUT)
