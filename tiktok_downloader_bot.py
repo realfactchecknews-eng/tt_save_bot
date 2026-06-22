@@ -153,7 +153,15 @@ def rate_limited(user_id: int) -> bool:
 
 # ── Скачивание через yt-dlp ───────────────────────────────────────────────────
 
-COOKIES_FILE = "cookies.txt"  # экспорт cookies из браузера — решает блокировку TikTok
+COOKIES_FILE = "cookies.txt"  # экспорт cookies из браузера — решает блокировку TikTok/YouTube
+
+
+def _is_youtube(url: str) -> bool:
+    return any(d in url for d in ("youtube.com", "youtu.be"))
+
+def _is_tiktok(url: str) -> bool:
+    return any(d in url for d in ("tiktok.com", "vm.tiktok", "vt.tiktok"))
+
 
 def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
     os.makedirs(folder, exist_ok=True)
@@ -161,7 +169,7 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
     if quality == "hd":
         fmt = (
             "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
-            "/best[ext=mp4][height<=1080]"
+            "/best[ext=mp4][height<=720]"
             "/bestvideo+bestaudio"
             "/best"
         )
@@ -182,9 +190,23 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
         "--socket-timeout", "30",
         "--retries", "3",
         "--no-part",
-        "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-        "--extractor-args", "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com;app_version=26.2.0",
     ]
+
+    if _is_youtube(url):
+        # iOS client даёт pre-merged потоки со звуком без необходимости ffmpeg
+        cmd += [
+            "--extractor-args", "youtube:player_client=ios,android,web",
+            "--add-header", "User-Agent:com.google.ios.youtube/19.29.1 CFNetwork/1408.0.4 Darwin/22.5.0",
+        ]
+    elif _is_tiktok(url):
+        cmd += [
+            "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "--extractor-args", "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com;app_version=26.2.0",
+        ]
+    else:
+        cmd += [
+            "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        ]
 
     if os.path.exists(COOKIES_FILE):
         cmd += ["--cookies", COOKIES_FILE]
@@ -197,7 +219,6 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
 
     if res.returncode != 0:
         logger.error("yt-dlp ошибка [%s]: %s", url, res.stderr[-400:])
-        # Передаём текст ошибки наверх для более точного сообщения пользователю
         raise RuntimeError(res.stderr)
 
     files = sorted(
