@@ -153,11 +153,12 @@ def rate_limited(user_id: int) -> bool:
 
 # ── Скачивание через yt-dlp ───────────────────────────────────────────────────
 
+COOKIES_FILE = "cookies.txt"  # экспорт cookies из браузера — решает блокировку TikTok
+
 def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
     os.makedirs(folder, exist_ok=True)
 
     if quality == "hd":
-        # Сначала пробуем готовый mp4 со звуком, потом склейку через ffmpeg
         fmt = (
             "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
             "/best[ext=mp4][height<=1080]"
@@ -181,15 +182,24 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
         "--socket-timeout", "30",
         "--retries", "3",
         "--no-part",
+        "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "--extractor-args", "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com;app_version=26.2.0",
     ]
+
+    if os.path.exists(COOKIES_FILE):
+        cmd += ["--cookies", COOKIES_FILE]
+
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=DL_TIMEOUT)
     except subprocess.TimeoutExpired:
         logger.warning("Таймаут скачивания: %s", url)
         return None
+
     if res.returncode != 0:
         logger.error("yt-dlp ошибка [%s]: %s", url, res.stderr[-400:])
-        return None
+        # Передаём текст ошибки наверх для более точного сообщения пользователю
+        raise RuntimeError(res.stderr)
+
     files = sorted(
         os.path.join(folder, f) for f in os.listdir(folder)
         if f.lower().endswith(IMAGE_EXTS + VIDEO_EXTS)
@@ -440,12 +450,29 @@ async def worker():
         try:
             await status_msg.edit_text("Скачиваю... ⏳")
 
-            files = await asyncio.to_thread(_run_yt_dlp, url, folder, quality)
+            try:
+                files = await asyncio.to_thread(_run_yt_dlp, url, folder, quality)
+            except RuntimeError as e:
+                err = str(e).lower()
+                if "ip address is blocked" in err or "ip" in err and "blocked" in err:
+                    await status_msg.edit_text(
+                        "❌ TikTok заблокировал IP сервера.\n"
+                        "Попробуй через несколько минут или отправь другую ссылку."
+                    )
+                elif "private" in err or "прива" in err:
+                    await status_msg.edit_text("❌ Это видео приватное — скачать нельзя.")
+                elif "removed" in err or "deleted" in err or "не существует" in err:
+                    await status_msg.edit_text("❌ Видео удалено или не существует.")
+                else:
+                    await status_msg.edit_text(
+                        "❌ Не удалось скачать. Контент удалён, приватный "
+                        "или платформа временно недоступна — попробуй позже."
+                    )
+                continue
 
             if not files:
                 await status_msg.edit_text(
-                    "Не получилось скачать. Контент может быть удалён, приватным "
-                    "или платформа временно недоступна — попробуй позже."
+                    "❌ Не удалось скачать. Попробуй позже или другую ссылку."
                 )
                 continue
 
