@@ -664,12 +664,14 @@ async def main():
 
     # Записываем cookies из env var при каждом старте (перезаписываем всегда)
     import base64
-    cookies_b64 = os.getenv("COOKIES_B64")
+    cookies_b64 = os.getenv("COOKIES_B64", "").strip()
     if cookies_b64:
         try:
-            with open(COOKIES_FILE, "wb") as f:
-                f.write(base64.b64decode(cookies_b64))
-            logger.info("cookies.txt обновлён из COOKIES_B64")
+            # urlsafe_b64decode избегает повреждения символов + и / в веб-формах
+            raw = base64.urlsafe_b64decode(cookies_b64 + "==")
+            with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+                f.write(raw.decode("utf-8"))
+            logger.info("cookies.txt обновлён из COOKIES_B64 (%d байт)", len(raw))
         except Exception as e:
             logger.warning("Не удалось записать cookies из COOKIES_B64: %s", e)
     elif os.path.exists(COOKIES_FILE):
