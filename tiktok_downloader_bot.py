@@ -496,19 +496,20 @@ async def worker():
                 files = await asyncio.to_thread(_run_yt_dlp, url, folder, quality)
             except RuntimeError as e:
                 err = str(e).lower()
-                if "ip address is blocked" in err or "ip" in err and "blocked" in err:
+                if "status code 0" in err or "ip address is blocked" in err:
                     await status_msg.edit_text(
-                        "❌ TikTok заблокировал IP сервера.\n"
-                        "Попробуй через несколько минут или отправь другую ссылку."
+                        "❌ TikTok не отдаёт это видео с нашего сервера.\n\n"
+                        "Попробуй другую ссылку — некоторые видео доступны только авторизованным пользователям."
                     )
-                elif "private" in err or "прива" in err:
+                elif "private" in err:
                     await status_msg.edit_text("❌ Это видео приватное — скачать нельзя.")
-                elif "removed" in err or "deleted" in err or "не существует" in err:
-                    await status_msg.edit_text("❌ Видео удалено или не существует.")
+                elif "removed" in err or "deleted" in err or "not available" in err:
+                    await status_msg.edit_text("❌ Видео удалено или недоступно.")
+                elif "sign in" in err or "login" in err or "age" in err:
+                    await status_msg.edit_text("❌ Видео требует входа в аккаунт — скачать нельзя.")
                 else:
                     await status_msg.edit_text(
-                        "❌ Не удалось скачать. Контент удалён, приватный "
-                        "или платформа временно недоступна — попробуй позже."
+                        "❌ Не удалось скачать. Попробуй другую ссылку или зайди позже."
                     )
                 continue
 
@@ -661,10 +662,16 @@ async def main():
     db_init()
     os.makedirs(TMP_DIR, exist_ok=True)
 
-    # Обновляем yt-dlp при каждом старте чтобы TikTok всегда работал
+    # Обновляем yt-dlp через pip (не через GitHub чтобы избежать rate limit)
     logger.info("Обновляю yt-dlp...")
-    upd = subprocess.run(["yt-dlp", "-U"], capture_output=True, text=True)
-    logger.info("yt-dlp: %s", (upd.stdout or upd.stderr).strip().splitlines()[-1] if (upd.stdout or upd.stderr) else "готов")
+    upd = subprocess.run(
+        ["pip", "install", "-U", "--quiet", "yt-dlp"],
+        capture_output=True, text=True
+    )
+    if upd.returncode == 0:
+        logger.info("yt-dlp обновлён")
+    else:
+        logger.warning("Не удалось обновить yt-dlp: %s", upd.stderr[-200:])
 
     if PROXY:
         logger.info("Прокси: %s", PROXY)
