@@ -34,6 +34,7 @@ from aiogram.types import (
     CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     LabeledPrice, PreCheckoutQuery,
     ReplyKeyboardMarkup, KeyboardButton,
+    InlineQuery, InlineQueryResultVideo,
 )
 from aiogram.filters import Command
 from dotenv import load_dotenv
@@ -154,6 +155,36 @@ def rate_limited(user_id: int) -> bool:
 # ── Скачивание через yt-dlp ───────────────────────────────────────────────────
 
 COOKIES_FILE = "cookies.txt"  # экспорт cookies из браузера — решает блокировку TikTok/YouTube
+
+
+def _get_direct_url(url: str) -> Optional[tuple[str, str]]:
+    """Быстро извлекает прямую ссылку на видео и превью без скачивания."""
+    cmd = [
+        "yt-dlp", url,
+        "--print", "url",
+        "--print", "thumbnail",
+        "--no-warnings", "--no-playlist",
+        "-f", "best[ext=mp4][height<=720]/best[ext=mp4]/best",
+        "--socket-timeout", "10",
+    ]
+    if _is_youtube(url):
+        cmd += ["--extractor-args", "youtube:player_client=ios,android,web"]
+    elif _is_tiktok(url):
+        cmd += ["--extractor-args", "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com"]
+    if os.path.exists(COOKIES_FILE):
+        cmd += ["--cookies", COOKIES_FILE]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+    except subprocess.TimeoutExpired:
+        return None
+    if res.returncode != 0:
+        return None
+    lines = [l.strip() for l in res.stdout.strip().splitlines() if l.strip()]
+    if not lines:
+        return None
+    video_url = lines[0]
+    thumb_url = lines[1] if len(lines) >= 2 else video_url
+    return video_url, thumb_url
 
 
 def _is_youtube(url: str) -> bool:
@@ -564,6 +595,44 @@ async def worker():
         finally:
             await asyncio.to_thread(shutil.rmtree, folder, ignore_errors=True)
             task_queue.task_done()
+
+
+# ── Inline режим ─────────────────────────────────────────────────────────────
+
+@dp.inline_query()
+async def inline_handler(query: InlineQuery):
+    url_match = URL_RE.search(query.query.strip())
+    if not url_match:
+        await query.answer(
+            [],
+            cache_time=1,
+            switch_pm_text="Вставь ссылку на TikTok / YouTube / Instagram",
+            switch_pm_parameter="start",
+        )
+        return
+
+    url = url_match.group(0)
+    result = await asyncio.to_thread(_get_direct_url, url)
+
+    if not result:
+        await query.answer([], cache_time=5)
+        return
+
+    video_url, thumb_url = result
+    await query.answer(
+        [
+            InlineQueryResultVideo(
+                id=uuid.uuid4().hex[:8],
+                video_url=video_url,
+                mime_type="video/mp4",
+                thumbnail_url=thumb_url,
+                title="🎬 Отправить видео в чат",
+                description="Нажми — видео появится в чате",
+                caption=CAPTION,
+            )
+        ],
+        cache_time=300,
+    )
 
 
 # ── Fallback ──────────────────────────────────────────────────────────────────
