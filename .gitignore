@@ -1,0 +1,8 @@
+.env
+cookies.txt
+bot.pid
+bot.log*
+bot.db
+tmp_media/
+__pycache__/
+*.pyc
