@@ -155,6 +155,7 @@ def rate_limited(user_id: int) -> bool:
 # ── Скачивание через yt-dlp ───────────────────────────────────────────────────
 
 COOKIES_FILE = "cookies.txt"  # экспорт cookies из браузера — решает блокировку TikTok/YouTube
+PROXY        = os.getenv("PROXY")  # например: socks5://user:pass@host:port или http://host:port
 
 
 def _get_direct_url(url: str) -> Optional[tuple[str, str]]:
@@ -173,6 +174,8 @@ def _get_direct_url(url: str) -> Optional[tuple[str, str]]:
         cmd += ["--extractor-args", "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com"]
     if os.path.exists(COOKIES_FILE):
         cmd += ["--cookies", COOKIES_FILE]
+    if PROXY:
+        cmd += ["--proxy", PROXY]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
     except subprocess.TimeoutExpired:
@@ -226,6 +229,8 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
 
     if os.path.exists(COOKIES_FILE):
         cmd += ["--cookies", COOKIES_FILE]
+    if PROXY:
+        cmd += ["--proxy", PROXY]
 
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=DL_TIMEOUT)
@@ -655,6 +660,15 @@ async def main():
     setup_logging()
     db_init()
     os.makedirs(TMP_DIR, exist_ok=True)
+
+    # Обновляем yt-dlp при каждом старте чтобы TikTok всегда работал
+    logger.info("Обновляю yt-dlp...")
+    upd = subprocess.run(["yt-dlp", "-U"], capture_output=True, text=True)
+    logger.info("yt-dlp: %s", (upd.stdout or upd.stderr).strip().splitlines()[-1] if (upd.stdout or upd.stderr) else "готов")
+
+    if PROXY:
+        logger.info("Прокси: %s", PROXY)
+
     for _ in range(WORKERS):
         asyncio.create_task(worker())
     logger.info("Бот запущен (%d воркеров)", WORKERS)
