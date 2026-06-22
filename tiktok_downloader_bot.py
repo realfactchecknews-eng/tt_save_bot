@@ -198,19 +198,9 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
     os.makedirs(folder, exist_ok=True)
 
     if quality == "hd":
-        fmt = (
-            "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
-            "/best[ext=mp4][height<=720]"
-            "/bestvideo+bestaudio"
-            "/best"
-        )
+        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
     else:
-        fmt = (
-            "best[ext=mp4][height<=480]"
-            "/best[height<=480]"
-            "/worst[ext=mp4]"
-            "/worst"
-        )
+        fmt = "best[ext=mp4][height<=480]/best[height<=480]/worst[ext=mp4]/worst"
 
     cmd = [
         "yt-dlp", url,
@@ -224,17 +214,12 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
     ]
 
     if _is_youtube(url):
-        # iOS client даёт pre-merged потоки со звуком без необходимости ffmpeg
         cmd += [
             "--extractor-args", "youtube:player_client=ios,android,web",
             "--add-header", "User-Agent:com.google.ios.youtube/19.29.1 CFNetwork/1408.0.4 Darwin/22.5.0",
         ]
-    elif _is_tiktok(url):
-        cmd += [
-            "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-            "--extractor-args", "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com;app_version=26.2.0",
-        ]
     else:
+        # Мобильный UA для TikTok и Instagram
         cmd += [
             "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
         ]
@@ -294,7 +279,7 @@ def _subscribe_keyboard() -> InlineKeyboardMarkup:
 # ── Тексты ───────────────────────────────────────────────────────────────────
 
 START_TEXT = f"""
-🎬 <b>TikTok Save Bot</b>
+🎬 <b>MellSave Bot</b>
 
 Скачиваю видео и фото <b>без водяных знаков</b> с:
 • TikTok (видео + фото-слайдшоу)
@@ -465,7 +450,7 @@ async def handle_quality_cb(callback: CallbackQuery):
 async def handle_buy_sub(callback: CallbackQuery):
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title="Подписка TikTok Save Bot",
+        title="Подписка MellSave Bot",
         description=f"Безлимитные скачивания на {SUBSCRIPTION_DAYS} дней",
         payload="monthly_sub",
         currency="XTR",
