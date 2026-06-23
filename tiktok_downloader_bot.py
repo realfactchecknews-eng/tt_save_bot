@@ -694,16 +694,8 @@ async def main():
     elif os.path.exists(COOKIES_FILE):
         logger.info("cookies.txt найден: %s", COOKIES_FILE)
 
-    # Обновляем yt-dlp через pip (не через GitHub чтобы избежать rate limit)
-    logger.info("Обновляю yt-dlp...")
-    upd = subprocess.run(
-        ["pip", "install", "-U", "--quiet", "yt-dlp"],
-        capture_output=True, text=True
-    )
-    if upd.returncode == 0:
-        logger.info("yt-dlp обновлён")
-    else:
-        logger.warning("Не удалось обновить yt-dlp: %s", upd.stderr[-200:])
+    ver = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True)
+    logger.info("yt-dlp версия: %s", ver.stdout.strip())
 
     if PROXY:
         logger.info("Прокси: %s", PROXY)
