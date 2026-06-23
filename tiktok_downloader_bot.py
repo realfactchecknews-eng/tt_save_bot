@@ -153,17 +153,23 @@ def rate_limited(user_id: int) -> bool:
     return False
 
 def _write_tiktok_cookies(session_id: str) -> None:
-    """Генерирует cookies.txt из session ID — работает без base64 и файлов."""
+    """Генерирует cookies.txt из TT_SESSION_ID и опционально TT_UID."""
     exp = 1797692884  # ~2026-12
-    content = (
-        "# Netscape HTTP Cookie File\n"
-        f".tiktok.com\tTRUE\t/\tTRUE\t{exp}\tsessionid\t{session_id}\n"
-        f".tiktok.com\tTRUE\t/\tTRUE\t{exp}\tsid_tt\t{session_id}\n"
-        f".tiktok.com\tTRUE\t/\tTRUE\t{exp}\tsessionid_ss\t{session_id}\n"
-    )
+    uid = os.getenv("TT_UID", "").strip()
+    lines = [
+        "# Netscape HTTP Cookie File",
+        f".tiktok.com\tTRUE\t/\tTRUE\t{exp}\tsessionid\t{session_id}",
+        f".tiktok.com\tTRUE\t/\tTRUE\t{exp}\tsid_tt\t{session_id}",
+        f".tiktok.com\tTRUE\t/\tTRUE\t{exp}\tsessionid_ss\t{session_id}",
+    ]
+    if uid:
+        lines += [
+            f".tiktok.com\tTRUE\t/\tTRUE\t{exp}\tuid_tt\t{uid}",
+            f".tiktok.com\tTRUE\t/\tTRUE\t{exp}\tuid_tt_ss\t{uid}",
+        ]
     with open("cookies.txt", "w", encoding="utf-8") as f:
-        f.write(content)
-    logger.info("cookies.txt сгенерирован из TT_SESSION_ID")
+        f.write("\n".join(lines) + "\n")
+    logger.info("cookies.txt сгенерирован (uid=%s)", "да" if uid else "нет")
 
 
 # ── Скачивание через yt-dlp ───────────────────────────────────────────────────
@@ -235,8 +241,12 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
             "--extractor-args", "youtube:player_client=ios,android,web",
             "--add-header", "User-Agent:com.google.ios.youtube/19.29.1 CFNetwork/1408.0.4 Darwin/22.5.0",
         ]
+    elif _is_tiktok(url):
+        cmd += [
+            "--extractor-args", "tiktok:app_name=trill",
+            "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        ]
     else:
-        # Мобильный UA для TikTok и Instagram
         cmd += [
             "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
         ]
