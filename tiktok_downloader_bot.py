@@ -25,6 +25,7 @@ import uuid
 import shutil
 import sqlite3
 import time
+import threading
 import urllib.request
 import urllib.parse
 from collections import defaultdict
@@ -200,21 +201,41 @@ def _http_get(url: str, timeout: int = 30) -> bytes:
         return resp.read()
 
 
+# Глобальный троттл: tikwm даёт ~1 запрос/сек на IP, а воркеров несколько.
+# Гейт пускает к API не чаще TIKWM_MIN_INTERVAL независимо от числа потоков.
+TIKWM_MIN_INTERVAL = 1.1   # секунд между запросами к tikwm
+TIKWM_RETRIES      = 4     # попыток при лимите/сбое
+_tikwm_lock = threading.Lock()
+_tikwm_last = 0.0
+
+
+def _tikwm_gate() -> None:
+    """Блокирует поток, пока не пройдёт минимальный интервал с прошлого запроса."""
+    global _tikwm_last
+    with _tikwm_lock:
+        wait = TIKWM_MIN_INTERVAL - (time.monotonic() - _tikwm_last)
+        if wait > 0:
+            time.sleep(wait)
+        _tikwm_last = time.monotonic()
+
+
 def _tikwm_fetch(url: str, timeout: int = 20) -> Optional[dict]:
     """Запрашивает данные о видео у tikwm. Возвращает блок data или None."""
     api_url = TIKWM_API + "?" + urllib.parse.urlencode({"url": url, "hd": 1})
-    for attempt in range(2):
+    for attempt in range(TIKWM_RETRIES):
+        _tikwm_gate()
         try:
             data = json.loads(_http_get(api_url, timeout=timeout))
         except Exception as e:
             logger.warning("tikwm запрос не удался [%s]: %s", url, e)
-            return None
-        if data.get("code") == 0 and data.get("data"):
+            data = None
+        if data and data.get("code") == 0 and data.get("data"):
             return data["data"]
-        # code != 0 часто значит лимит бесплатного API — подождём и повторим
-        logger.warning("tikwm code=%s msg=%s", data.get("code"), data.get("msg"))
-        if attempt == 0:
-            time.sleep(1.5)
+        # code != 0 обычно значит лимит бесплатного API — ждём с нарастанием и повторяем
+        if data is not None:
+            logger.warning("tikwm code=%s msg=%s", data.get("code"), data.get("msg"))
+        if attempt < TIKWM_RETRIES - 1:
+            time.sleep(1.5 * (attempt + 1))
     return None
 
 
