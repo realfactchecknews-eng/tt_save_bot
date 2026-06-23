@@ -172,8 +172,6 @@ def _get_direct_url(url: str) -> Optional[tuple[str, str]]:
     ]
     if _is_youtube(url):
         cmd += ["--extractor-args", "youtube:player_client=ios,android,web"]
-    elif _is_tiktok(url):
-        cmd += ["--extractor-args", "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com"]
     if os.path.exists(COOKIES_FILE):
         cmd += ["--cookies", COOKIES_FILE]
     if PROXY:
