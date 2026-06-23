@@ -244,7 +244,6 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
     elif _is_tiktok(url):
         cmd += [
             "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-            "--extractor-args", "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com;app_version=26.2.0",
         ]
     else:
         cmd += [
