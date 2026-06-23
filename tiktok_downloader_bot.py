@@ -241,11 +241,6 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
             "--extractor-args", "youtube:player_client=ios,android,web",
             "--add-header", "User-Agent:com.google.ios.youtube/19.29.1 CFNetwork/1408.0.4 Darwin/22.5.0",
         ]
-    elif _is_tiktok(url):
-        cmd += [
-            "--extractor-args", "tiktok:app_name=trill",
-            "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-        ]
     else:
         cmd += [
             "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
