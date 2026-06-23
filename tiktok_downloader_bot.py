@@ -152,6 +152,20 @@ def rate_limited(user_id: int) -> bool:
     _user_hits[user_id].append(now)
     return False
 
+def _write_tiktok_cookies(session_id: str) -> None:
+    """Генерирует cookies.txt из session ID — работает без base64 и файлов."""
+    exp = 1797692884  # ~2026-12
+    content = (
+        "# Netscape HTTP Cookie File\n"
+        f".tiktok.com\tTRUE\t/\tTRUE\t{exp}\tsessionid\t{session_id}\n"
+        f".tiktok.com\tTRUE\t/\tTRUE\t{exp}\tsid_tt\t{session_id}\n"
+        f".tiktok.com\tTRUE\t/\tTRUE\t{exp}\tsessionid_ss\t{session_id}\n"
+    )
+    with open("cookies.txt", "w", encoding="utf-8") as f:
+        f.write(content)
+    logger.info("cookies.txt сгенерирован из TT_SESSION_ID")
+
+
 # ── Скачивание через yt-dlp ───────────────────────────────────────────────────
 
 # Ищем cookies.txt: сначала в общем хранилище bothost.ru, затем локально
@@ -663,26 +677,10 @@ async def main():
     os.makedirs(TMP_DIR, exist_ok=True)
 
     # Записываем cookies из env var при каждом старте
-    import base64 as _b64
-    cookies_b64 = os.getenv("COOKIES_B64", "").strip()
-    if cookies_b64:
-        raw = None
-        for decoder in (_b64.urlsafe_b64decode, _b64.b64decode):
-            try:
-                raw = decoder(cookies_b64 + "==")
-                text = raw.decode("utf-8", errors="ignore")
-                if "tiktok.com" in text:  # проверяем что декодировали верно
-                    with open("cookies.txt", "w", encoding="utf-8") as f:
-                        f.write(text)
-                    logger.info("cookies.txt записан из COOKIES_B64 (%d байт)", len(raw))
-                    break
-            except Exception:
-                continue
-        else:
-            # Ни один метод не сработал — удаляем повреждённый файл чтобы yt-dlp не падал
-            if os.path.exists("cookies.txt"):
-                os.remove("cookies.txt")
-            logger.warning("COOKIES_B64 повреждён — cookies не используются")
+    # Генерируем cookies.txt из TT_SESSION_ID (32-символьный токен сессии TikTok)
+    tt_session = os.getenv("TT_SESSION_ID", "").strip()
+    if tt_session:
+        _write_tiktok_cookies(tt_session)
     elif os.path.exists(COOKIES_FILE):
         logger.info("cookies.txt найден: %s", COOKIES_FILE)
 
