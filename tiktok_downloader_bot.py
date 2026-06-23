@@ -38,7 +38,7 @@ from aiogram.types import (
     CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     LabeledPrice, PreCheckoutQuery,
     ReplyKeyboardMarkup, KeyboardButton,
-    InlineQuery, InlineQueryResultVideo,
+    InlineQuery, InlineQueryResultVideo, InlineQueryResultsButton,
 )
 from aiogram.filters import Command
 from dotenv import load_dotenv
@@ -725,21 +725,27 @@ async def worker():
 
 @dp.inline_query()
 async def inline_handler(query: InlineQuery):
+    open_bot_btn = InlineQueryResultsButton(
+        text="Вставь ссылку на TikTok / YouTube / Instagram",
+        start_parameter="start",
+    )
+
     url_match = URL_RE.search(query.query.strip())
     if not url_match:
-        await query.answer(
-            [],
-            cache_time=1,
-            switch_pm_text="Вставь ссылку на TikTok / YouTube / Instagram",
-            switch_pm_parameter="start",
-        )
+        await query.answer([], cache_time=1, button=open_bot_btn)
         return
 
     url = url_match.group(0)
     result = await asyncio.to_thread(_get_direct_url, url)
 
     if not result:
-        await query.answer([], cache_time=5)
+        await query.answer(
+            [], cache_time=5,
+            button=InlineQueryResultsButton(
+                text="Не удалось получить видео — открой бота",
+                start_parameter="start",
+            ),
+        )
         return
 
     video_url, thumb_url = result
