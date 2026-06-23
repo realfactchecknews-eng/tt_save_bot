@@ -20,10 +20,13 @@ import subprocess
 import logging
 import logging.handlers
 import re
+import json
 import uuid
 import shutil
 import sqlite3
 import time
+import urllib.request
+import urllib.parse
 from collections import defaultdict
 from datetime import date, timedelta
 from typing import Optional
@@ -180,8 +183,96 @@ COOKIES_FILE = _SHARED_COOKIES if os.path.exists(_SHARED_COOKIES) else "cookies.
 PROXY        = os.getenv("PROXY")  # например: socks5://user:pass@host:port или http://host:port
 
 
+# ── TikTok через tikwm.com ────────────────────────────────────────────────────
+# TikTok блокирует IP дата-центров (status_code=0), поэтому видео резолвим через
+# сторонний сервис tikwm: он сам ходит к TikTok и отдаёт прямой mp4 без вотермарка.
+
+TIKWM_API = "https://www.tikwm.com/api/"
+_BROWSER_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+)
+
+
+def _http_get(url: str, timeout: int = 30) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _tikwm_fetch(url: str, timeout: int = 20) -> Optional[dict]:
+    """Запрашивает данные о видео у tikwm. Возвращает блок data или None."""
+    api_url = TIKWM_API + "?" + urllib.parse.urlencode({"url": url, "hd": 1})
+    for attempt in range(2):
+        try:
+            data = json.loads(_http_get(api_url, timeout=timeout))
+        except Exception as e:
+            logger.warning("tikwm запрос не удался [%s]: %s", url, e)
+            return None
+        if data.get("code") == 0 and data.get("data"):
+            return data["data"]
+        # code != 0 часто значит лимит бесплатного API — подождём и повторим
+        logger.warning("tikwm code=%s msg=%s", data.get("code"), data.get("msg"))
+        if attempt == 0:
+            time.sleep(1.5)
+    return None
+
+
+def _tikwm_abs(link: str) -> str:
+    return ("https://www.tikwm.com" + link) if link.startswith("/") else link
+
+
+def _download_tiktok(url: str, folder: str, quality: str) -> Optional[list[str]]:
+    """Скачивает TikTok видео или фото-слайдшоу через tikwm."""
+    os.makedirs(folder, exist_ok=True)
+    d = _tikwm_fetch(url)
+    if not d:
+        return None
+
+    files: list[str] = []
+    images = d.get("images")
+    if images:  # фото-слайдшоу
+        for i, img in enumerate(images):
+            path = os.path.join(folder, f"{i:04d}.jpg")
+            try:
+                with open(path, "wb") as f:
+                    f.write(_http_get(_tikwm_abs(img), timeout=30))
+                files.append(path)
+            except Exception as e:
+                logger.warning("Не скачал фото %s: %s", img, e)
+    else:  # видео
+        play = d.get("hdplay") if quality == "hd" else d.get("play")
+        play = play or d.get("play") or d.get("hdplay")
+        if not play:
+            return None
+        path = os.path.join(folder, "0001.mp4")
+        try:
+            with open(path, "wb") as f:
+                f.write(_http_get(_tikwm_abs(play), timeout=DL_TIMEOUT))
+            files.append(path)
+        except Exception as e:
+            logger.error("Не скачал видео TikTok [%s]: %s", url, e)
+            return None
+
+    return files or None
+
+
+def _tiktok_direct_url(url: str) -> Optional[tuple[str, str]]:
+    """Прямая ссылка на mp4 и превью для inline-режима (через tikwm)."""
+    d = _tikwm_fetch(url, timeout=12)
+    if not d:
+        return None
+    play = d.get("play") or d.get("hdplay")
+    if not play:
+        return None
+    cover = d.get("cover") or d.get("origin_cover") or play
+    return _tikwm_abs(play), _tikwm_abs(cover)
+
+
 def _get_direct_url(url: str) -> Optional[tuple[str, str]]:
     """Быстро извлекает прямую ссылку на видео и превью без скачивания."""
+    if _is_tiktok(url):
+        return _tiktok_direct_url(url)
     cmd = [
         "yt-dlp", url,
         "--print", "url",
@@ -218,6 +309,10 @@ def _is_tiktok(url: str) -> bool:
 
 
 def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
+    # TikTok качаем через tikwm — yt-dlp блокируется по IP дата-центра
+    if _is_tiktok(url):
+        return _download_tiktok(url, folder, quality)
+
     os.makedirs(folder, exist_ok=True)
 
     if quality == "hd":
@@ -241,14 +336,8 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
             "--extractor-args", "youtube:player_client=ios,android,web",
             "--add-header", "User-Agent:com.google.ios.youtube/19.29.1 CFNetwork/1408.0.4 Darwin/22.5.0",
         ]
-    elif _is_tiktok(url):
-        cmd += [
-            "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-        ]
     else:
-        cmd += [
-            "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-        ]
+        cmd += ["--add-header", f"User-Agent:{_BROWSER_UA}"]
 
     if os.path.exists(COOKIES_FILE):
         cmd += ["--cookies", COOKIES_FILE]
