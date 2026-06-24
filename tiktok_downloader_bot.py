@@ -360,9 +360,53 @@ def _youtube_video_id(url: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _clean_youtube_url(url: str) -> str:
+    """Оставляет только video ID, убирая sharing/referral параметры."""
+    vid = _youtube_video_id(url)
+    if not vid:
+        return url
+    if "/shorts/" in url:
+        return f"https://www.youtube.com/shorts/{vid}"
+    return f"https://www.youtube.com/watch?v={vid}"
+
+
+# Публичные Invidious-инстансы как fallback если cobalt недоступен
+_INVIDIOUS_INSTANCES = [
+    "https://inv.nadeko.net",
+    "https://invidious.privacyredirect.com",
+    "https://yt.cdaut.de",
+]
+# itag 18 = 360p mp4+audio, 22 = 720p mp4+audio
+_INVIDIOUS_ITAGS = {"hd": "22", "sd": "18"}
+
+
+def _invidious_fetch(vid: str, quality: str) -> Optional[str]:
+    """Возвращает прокси-ссылку на mp4 через Invidious или None."""
+    itag = _INVIDIOUS_ITAGS.get(quality, "18")
+    for instance in _INVIDIOUS_INSTANCES:
+        url = f"{instance}/latest_version?id={vid}&itag={itag}&local=true"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
+            # HEAD-запрос чтобы проверить что инстанс живой и видео отдаётся
+            req.get_method = lambda: "HEAD"
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    return url
+        except Exception as e:
+            logger.debug("Invidious %s недоступен: %s", instance, e)
+    return None
+
+
 def _download_youtube(url: str, folder: str, quality: str) -> Optional[list[str]]:
     os.makedirs(folder, exist_ok=True)
-    video_url = _cobalt_fetch(url, quality)
+    clean = _clean_youtube_url(url)
+    vid = _youtube_video_id(url)
+
+    video_url = _cobalt_fetch(clean, quality)
+    if not video_url and vid:
+        logger.info("cobalt не сработал, пробуем Invidious для %s", vid)
+        video_url = _invidious_fetch(vid, quality)
+
     if not video_url:
         return None
     path = os.path.join(folder, "0001.mp4")
@@ -376,10 +420,15 @@ def _download_youtube(url: str, folder: str, quality: str) -> Optional[list[str]
 
 
 def _youtube_direct_url(url: str) -> Optional[tuple[str, str]]:
-    video_url = _cobalt_fetch(url, "hd", timeout=15)
+    clean = _clean_youtube_url(url)
+    vid = _youtube_video_id(url)
+
+    video_url = _cobalt_fetch(clean, "hd", timeout=15)
+    if not video_url and vid:
+        video_url = _invidious_fetch(vid, "hd")
+
     if not video_url:
         return None
-    vid = _youtube_video_id(url)
     thumb = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg" if vid else video_url
     return video_url, thumb
 
