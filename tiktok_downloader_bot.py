@@ -315,18 +315,18 @@ def _clean_youtube_url(url: str) -> str:
 # ── Метод 1: yt-dlp с embedded/app клиентами ──────────────────────────────────
 
 def _ytdlp_youtube(url: str, folder: str, quality: str) -> Optional[list[str]]:
-    """yt-dlp с клиентами tv_embedded/ios — они не требуют Sign In на публичных видео."""
+    """yt-dlp с клиентами ios/tv_embedded — не требуют Sign In на публичных видео."""
     if quality == "hd":
-        fmt = "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/22/18/best[ext=mp4]/best"
+        fmt = "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
     else:
-        fmt = "18/bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/worst[ext=mp4]/worst"
+        fmt = "best[ext=mp4][height<=480]/best[height<=480]/worst[ext=mp4]/worst"
     cmd = [
         "yt-dlp", url,
         "-o", os.path.join(folder, "%(autonumber)04d.%(ext)s"),
         "--no-warnings", "--no-playlist",
         "-f", fmt,
         "--merge-output-format", "mp4",
-        "--extractor-args", "youtube:player_client=tv_embedded,ios,web_embedded",
+        "--extractor-args", "youtube:player_client=ios,tv_embedded,web_embedded",
         "--socket-timeout", "30",
         "--retries", "2",
         "--no-part",
@@ -351,6 +351,7 @@ def _ytdlp_youtube(url: str, folder: str, quality: str) -> Optional[list[str]]:
 # ── Метод 2: cobalt.tools ─────────────────────────────────────────────────────
 
 COBALT_API          = "https://api.cobalt.tools/"
+COBALT_API_KEY      = os.getenv("COBALT_API_KEY", "")  # бесплатный ключ с cobalt.tools
 _YT_QUALITY         = {"hd": "1080", "sd": "480"}
 COBALT_MIN_INTERVAL = 2.0
 _cobalt_lock        = threading.Lock()
@@ -367,6 +368,8 @@ def _cobalt_gate() -> None:
 
 
 def _cobalt_fetch(url: str, quality: str = "hd", timeout: int = 25) -> Optional[str]:
+    if not COBALT_API_KEY:
+        return None  # cobalt требует API ключ — без него не пробуем
     _cobalt_gate()
     payload = json.dumps({
         "url": url,
@@ -377,8 +380,12 @@ def _cobalt_fetch(url: str, quality: str = "hd", timeout: int = 25) -> Optional[
     }).encode()
     req = urllib.request.Request(
         COBALT_API, data=payload,
-        headers={"Content-Type": "application/json", "Accept": "application/json",
-                 "User-Agent": _BROWSER_UA},
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Api-Key {COBALT_API_KEY}",
+            "User-Agent": _BROWSER_UA,
+        },
         method="POST",
     )
     try:
