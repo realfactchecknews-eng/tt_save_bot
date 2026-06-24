@@ -299,17 +299,24 @@ def _get_direct_url(url: str) -> Optional[tuple[str, str]]:
         "--print", "url",
         "--print", "thumbnail",
         "--no-warnings", "--no-playlist",
-        "-f", "best[ext=mp4][height<=720]/best[ext=mp4]/best",
-        "--socket-timeout", "10",
+        "--no-check-formats",
+        "--socket-timeout", "15",
     ]
     if _is_youtube(url):
-        cmd += ["--extractor-args", "youtube:player_client=ios,android,web"]
+        # 18 = 360p mp4 с аудио, 22 = 720p mp4 с аудио — готовые стримы без мерджа.
+        # best[ext=mp4] на YouTube даёт видео без звука (DASH), Telegram его не играет.
+        cmd += [
+            "-f", "22/18/best[ext=mp4]",
+            "--extractor-args", "youtube:player_client=ios,android,web",
+        ]
+    else:
+        cmd += ["-f", "best[ext=mp4][height<=720]/best[ext=mp4]/best"]
     if os.path.exists(COOKIES_FILE):
         cmd += ["--cookies", COOKIES_FILE]
     if PROXY:
         cmd += ["--proxy", PROXY]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
     except subprocess.TimeoutExpired:
         return None
     if res.returncode != 0:
