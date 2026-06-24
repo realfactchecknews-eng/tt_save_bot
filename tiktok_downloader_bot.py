@@ -297,6 +297,19 @@ def _tiktok_direct_url(url: str) -> Optional[tuple[str, str]]:
 
 COBALT_API = "https://api.cobalt.tools/"
 _YT_QUALITY = {"hd": "1080", "sd": "480"}
+COBALT_RETRIES      = 3
+COBALT_MIN_INTERVAL = 2.0   # cobalt public API: ~20 req/min, берём с запасом
+_cobalt_lock = threading.Lock()
+_cobalt_last = 0.0
+
+
+def _cobalt_gate() -> None:
+    global _cobalt_last
+    with _cobalt_lock:
+        wait = COBALT_MIN_INTERVAL - (time.monotonic() - _cobalt_last)
+        if wait > 0:
+            time.sleep(wait)
+        _cobalt_last = time.monotonic()
 
 
 def _cobalt_fetch(url: str, quality: str = "hd", timeout: int = 30) -> Optional[str]:
@@ -306,22 +319,28 @@ def _cobalt_fetch(url: str, quality: str = "hd", timeout: int = 30) -> Optional[
         "videoQuality": _YT_QUALITY.get(quality, "720"),
         "filenameStyle": "basic",
     }).encode()
-    req = urllib.request.Request(
-        COBALT_API, data=payload,
-        headers={"Content-Type": "application/json", "Accept": "application/json",
-                 "User-Agent": _BROWSER_UA},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read())
-    except Exception as e:
-        logger.warning("cobalt запрос не удался [%s]: %s", url, e)
-        return None
-    status = data.get("status")
-    if status in ("tunnel", "redirect", "stream"):
-        return data.get("url")
-    logger.warning("cobalt status=%s error=%s", status, data.get("error"))
+    for attempt in range(COBALT_RETRIES):
+        _cobalt_gate()
+        req = urllib.request.Request(
+            COBALT_API, data=payload,
+            headers={"Content-Type": "application/json", "Accept": "application/json",
+                     "User-Agent": _BROWSER_UA},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read())
+        except Exception as e:
+            logger.warning("cobalt запрос не удался [%s]: %s", url, e)
+            if attempt < COBALT_RETRIES - 1:
+                time.sleep(2.0 * (attempt + 1))
+            continue
+        status = data.get("status")
+        if status in ("tunnel", "redirect", "stream"):
+            return data.get("url")
+        logger.warning("cobalt status=%s error=%s", status, data.get("error"))
+        if attempt < COBALT_RETRIES - 1:
+            time.sleep(2.0 * (attempt + 1))
     return None
 
 
@@ -447,6 +466,19 @@ dp  = Dispatcher()
 
 task_queue: asyncio.Queue = asyncio.Queue()
 _pending: dict[str, tuple] = {}
+_PENDING_TTL = 300  # секунд — сколько ждём нажатия HD/SD
+
+
+async def _cleanup_pending():
+    """Раз в минуту удаляет токены, которые юзер проигнорировал > 5 минут."""
+    while True:
+        await asyncio.sleep(60)
+        cutoff = time.monotonic() - _PENDING_TTL
+        stale = [k for k, v in _pending.items() if v[3] < cutoff]
+        for k in stale:
+            _pending.pop(k, None)
+        if stale:
+            logger.debug("Удалено %d устаревших pending-токенов", len(stale))
 
 
 def _main_keyboard() -> ReplyKeyboardMarkup:
@@ -860,22 +892,18 @@ async def main():
     db_init()
     os.makedirs(TMP_DIR, exist_ok=True)
 
-    # Записываем cookies из env var при каждом старте
-    # Генерируем cookies.txt из TT_SESSION_ID (32-символьный токен сессии TikTok)
+    # TikTok: cookies для tikwm не нужны, но пишем файл на случай если yt-dlp понадобится для других платформ
     tt_session = os.getenv("TT_SESSION_ID", "").strip()
     if tt_session:
         _write_tiktok_cookies(tt_session)
-    elif os.path.exists(COOKIES_FILE):
-        logger.info("cookies.txt найден: %s", COOKIES_FILE)
 
     ver = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True)
-    logger.info("yt-dlp версия: %s", ver.stdout.strip())
-
-    if PROXY:
-        logger.info("Прокси: %s", PROXY)
+    logger.info("yt-dlp версия: %s | TikTok→tikwm | YouTube→cobalt | прокси: %s",
+                ver.stdout.strip(), PROXY or "нет")
 
     for _ in range(WORKERS):
         asyncio.create_task(worker())
+    asyncio.create_task(_cleanup_pending())
     logger.info("Бот запущен (%d воркеров)", WORKERS)
     await dp.start_polling(bot)
 
