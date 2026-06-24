@@ -316,17 +316,14 @@ def _clean_youtube_url(url: str) -> str:
 
 def _ytdlp_youtube(url: str, folder: str, quality: str) -> Optional[list[str]]:
     """yt-dlp с клиентами ios/tv_embedded — не требуют Sign In на публичных видео."""
-    if quality == "hd":
-        fmt = "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
-    else:
-        fmt = "best[ext=mp4][height<=480]/best[height<=480]/worst[ext=mp4]/worst"
+    fmt = "bestvideo+bestaudio/best" if quality == "hd" else "best[height<=480]/worst"
     cmd = [
         "yt-dlp", url,
         "-o", os.path.join(folder, "%(autonumber)04d.%(ext)s"),
         "--no-warnings", "--no-playlist",
         "-f", fmt,
         "--merge-output-format", "mp4",
-        "--extractor-args", "youtube:player_client=ios,tv_embedded,web_embedded",
+        "--extractor-args", "youtube:player_client=ios,android,tv_embedded",
         "--socket-timeout", "30",
         "--retries", "2",
         "--no-part",
