@@ -156,27 +156,6 @@ def rate_limited(user_id: int) -> bool:
     _user_hits[user_id].append(now)
     return False
 
-YT_COOKIES_FILE = "yt_cookies.txt"
-
-
-def _write_youtube_cookies(b64: str) -> None:
-    """Декодирует YT_COOKIES_B64 и сохраняет в yt_cookies.txt."""
-    import base64
-    raw = b64.strip().replace("\n", "").replace("\r", "")
-    # пробуем urlsafe, потом стандартный base64
-    for decode in (base64.urlsafe_b64decode, base64.b64decode):
-        try:
-            padded = raw + "=" * (-len(raw) % 4)
-            content = decode(padded).decode("utf-8")
-            if "youtube.com" in content or "google.com" in content:
-                with open(YT_COOKIES_FILE, "w", encoding="utf-8") as f:
-                    f.write(content)
-                logger.info("yt_cookies.txt записан")
-                return
-        except Exception:
-            continue
-    logger.error("YT_COOKIES_B64 не удалось декодировать — YouTube куки не записаны")
-
 
 def _write_tiktok_cookies(session_id: str) -> None:
     """Генерирует cookies.txt из TT_SESSION_ID и опционально TT_UID."""
@@ -312,29 +291,86 @@ def _tiktok_direct_url(url: str) -> Optional[tuple[str, str]]:
     return _tikwm_abs(play), _tikwm_abs(cover)
 
 
+# ── YouTube через cobalt.tools ────────────────────────────────────────────────
+# YouTube блокирует IP дата-центров ("Sign in to confirm you're not a bot").
+# cobalt.tools — опенсорс-сервис, резолвит видео со своих IP и отдаёт прямой mp4.
+
+COBALT_API = "https://api.cobalt.tools/"
+_YT_QUALITY = {"hd": "1080", "sd": "480"}
+
+
+def _cobalt_fetch(url: str, quality: str = "hd", timeout: int = 30) -> Optional[str]:
+    """Возвращает прямую ссылку на mp4 через cobalt API или None."""
+    payload = json.dumps({
+        "url": url,
+        "videoQuality": _YT_QUALITY.get(quality, "720"),
+        "filenameStyle": "basic",
+    }).encode()
+    req = urllib.request.Request(
+        COBALT_API, data=payload,
+        headers={"Content-Type": "application/json", "Accept": "application/json",
+                 "User-Agent": _BROWSER_UA},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+    except Exception as e:
+        logger.warning("cobalt запрос не удался [%s]: %s", url, e)
+        return None
+    status = data.get("status")
+    if status in ("tunnel", "redirect", "stream"):
+        return data.get("url")
+    logger.warning("cobalt status=%s error=%s", status, data.get("error"))
+    return None
+
+
+def _youtube_video_id(url: str) -> Optional[str]:
+    m = re.search(r"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else None
+
+
+def _download_youtube(url: str, folder: str, quality: str) -> Optional[list[str]]:
+    os.makedirs(folder, exist_ok=True)
+    video_url = _cobalt_fetch(url, quality)
+    if not video_url:
+        return None
+    path = os.path.join(folder, "0001.mp4")
+    try:
+        with open(path, "wb") as f:
+            f.write(_http_get(video_url, timeout=DL_TIMEOUT))
+        return [path]
+    except Exception as e:
+        logger.error("Не скачал YouTube [%s]: %s", url, e)
+        return None
+
+
+def _youtube_direct_url(url: str) -> Optional[tuple[str, str]]:
+    video_url = _cobalt_fetch(url, "hd", timeout=15)
+    if not video_url:
+        return None
+    vid = _youtube_video_id(url)
+    thumb = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg" if vid else video_url
+    return video_url, thumb
+
+
 def _get_direct_url(url: str) -> Optional[tuple[str, str]]:
     """Быстро извлекает прямую ссылку на видео и превью без скачивания."""
     if _is_tiktok(url):
         return _tiktok_direct_url(url)
+    if _is_youtube(url):
+        return _youtube_direct_url(url)
     cmd = [
         "yt-dlp", url,
         "--print", "url",
         "--print", "thumbnail",
         "--no-warnings", "--no-playlist",
         "--no-check-formats",
+        "-f", "best[ext=mp4][height<=720]/best[ext=mp4]/best",
         "--socket-timeout", "15",
     ]
-    if _is_youtube(url):
-        cmd += [
-            "-f", "22/18/best[ext=mp4]",
-            "--extractor-args", "youtube:player_client=ios,android,web",
-        ]
-        if os.path.exists(YT_COOKIES_FILE):
-            cmd += ["--cookies", YT_COOKIES_FILE]
-    else:
-        cmd += ["-f", "best[ext=mp4][height<=720]/best[ext=mp4]/best"]
-        if os.path.exists(COOKIES_FILE):
-            cmd += ["--cookies", COOKIES_FILE]
+    if os.path.exists(COOKIES_FILE):
+        cmd += ["--cookies", COOKIES_FILE]
     if PROXY:
         cmd += ["--proxy", PROXY]
     try:
@@ -359,17 +395,15 @@ def _is_tiktok(url: str) -> bool:
 
 
 def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
-    # TikTok качаем через tikwm — yt-dlp блокируется по IP дата-центра
     if _is_tiktok(url):
         return _download_tiktok(url, folder, quality)
+    if _is_youtube(url):
+        return _download_youtube(url, folder, quality)
 
     os.makedirs(folder, exist_ok=True)
 
     if quality == "hd":
         fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
-    elif _is_youtube(url):
-        # 18 = 360p mp4 с аудио (pre-muxed). best[ext=mp4][height<=480] даёт видео без звука.
-        fmt = "18/bestvideo[height<=480]+bestaudio/best"
     else:
         fmt = "best[ext=mp4][height<=480]/best[height<=480]/worst[ext=mp4]/worst"
 
@@ -382,19 +416,11 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
         "--socket-timeout", "30",
         "--retries", "3",
         "--no-part",
+        "--add-header", f"User-Agent:{_BROWSER_UA}",
     ]
 
-    if _is_youtube(url):
-        cmd += [
-            "--extractor-args", "youtube:player_client=ios,android,web",
-            "--add-header", "User-Agent:com.google.ios.youtube/19.29.1 CFNetwork/1408.0.4 Darwin/22.5.0",
-        ]
-        if os.path.exists(YT_COOKIES_FILE):
-            cmd += ["--cookies", YT_COOKIES_FILE]
-    else:
-        cmd += ["--add-header", f"User-Agent:{_BROWSER_UA}"]
-        if os.path.exists(COOKIES_FILE):
-            cmd += ["--cookies", COOKIES_FILE]
+    if os.path.exists(COOKIES_FILE):
+        cmd += ["--cookies", COOKIES_FILE]
     if PROXY:
         cmd += ["--proxy", PROXY]
 
@@ -841,12 +867,6 @@ async def main():
         _write_tiktok_cookies(tt_session)
     elif os.path.exists(COOKIES_FILE):
         logger.info("cookies.txt найден: %s", COOKIES_FILE)
-
-    yt_cookies_b64 = os.getenv("YT_COOKIES_B64", "").strip()
-    if yt_cookies_b64:
-        _write_youtube_cookies(yt_cookies_b64)
-    elif os.path.exists(YT_COOKIES_FILE):
-        logger.info("yt_cookies.txt найден")
 
     ver = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True)
     logger.info("yt-dlp версия: %s", ver.stdout.strip())
