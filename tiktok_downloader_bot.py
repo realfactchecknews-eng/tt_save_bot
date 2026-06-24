@@ -345,6 +345,9 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
 
     if quality == "hd":
         fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+    elif _is_youtube(url):
+        # 18 = 360p mp4 с аудио (pre-muxed). best[ext=mp4][height<=480] даёт видео без звука.
+        fmt = "18/bestvideo[height<=480]+bestaudio/best"
     else:
         fmt = "best[ext=mp4][height<=480]/best[height<=480]/worst[ext=mp4]/worst"
 
