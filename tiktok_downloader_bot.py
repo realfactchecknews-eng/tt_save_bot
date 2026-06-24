@@ -317,19 +317,30 @@ def _cobalt_fetch(url: str, quality: str = "hd", timeout: int = 30) -> Optional[
     payload = json.dumps({
         "url": url,
         "videoQuality": _YT_QUALITY.get(quality, "720"),
+        "youtubeVideoCodec": "h264",
         "filenameStyle": "basic",
+        "downloadMode": "auto",
     }).encode()
     for attempt in range(COBALT_RETRIES):
         _cobalt_gate()
         req = urllib.request.Request(
             COBALT_API, data=payload,
-            headers={"Content-Type": "application/json", "Accept": "application/json",
-                     "User-Agent": _BROWSER_UA},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": _BROWSER_UA,
+            },
             method="POST",
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")[:300]
+            logger.warning("cobalt HTTP %s [%s]: %s", e.code, url, body)
+            if attempt < COBALT_RETRIES - 1:
+                time.sleep(2.0 * (attempt + 1))
+            continue
         except Exception as e:
             logger.warning("cobalt запрос не удался [%s]: %s", url, e)
             if attempt < COBALT_RETRIES - 1:
