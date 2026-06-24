@@ -156,6 +156,28 @@ def rate_limited(user_id: int) -> bool:
     _user_hits[user_id].append(now)
     return False
 
+YT_COOKIES_FILE = "yt_cookies.txt"
+
+
+def _write_youtube_cookies(b64: str) -> None:
+    """Декодирует YT_COOKIES_B64 и сохраняет в yt_cookies.txt."""
+    import base64
+    raw = b64.strip().replace("\n", "").replace("\r", "")
+    # пробуем urlsafe, потом стандартный base64
+    for decode in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            padded = raw + "=" * (-len(raw) % 4)
+            content = decode(padded).decode("utf-8")
+            if "youtube.com" in content or "google.com" in content:
+                with open(YT_COOKIES_FILE, "w", encoding="utf-8") as f:
+                    f.write(content)
+                logger.info("yt_cookies.txt записан")
+                return
+        except Exception:
+            continue
+    logger.error("YT_COOKIES_B64 не удалось декодировать — YouTube куки не записаны")
+
+
 def _write_tiktok_cookies(session_id: str) -> None:
     """Генерирует cookies.txt из TT_SESSION_ID и опционально TT_UID."""
     exp = 1797692884  # ~2026-12
@@ -303,16 +325,16 @@ def _get_direct_url(url: str) -> Optional[tuple[str, str]]:
         "--socket-timeout", "15",
     ]
     if _is_youtube(url):
-        # 18 = 360p mp4 с аудио, 22 = 720p mp4 с аудио — готовые стримы без мерджа.
-        # best[ext=mp4] на YouTube даёт видео без звука (DASH), Telegram его не играет.
         cmd += [
             "-f", "22/18/best[ext=mp4]",
             "--extractor-args", "youtube:player_client=ios,android,web",
         ]
+        if os.path.exists(YT_COOKIES_FILE):
+            cmd += ["--cookies", YT_COOKIES_FILE]
     else:
         cmd += ["-f", "best[ext=mp4][height<=720]/best[ext=mp4]/best"]
-    if os.path.exists(COOKIES_FILE):
-        cmd += ["--cookies", COOKIES_FILE]
+        if os.path.exists(COOKIES_FILE):
+            cmd += ["--cookies", COOKIES_FILE]
     if PROXY:
         cmd += ["--proxy", PROXY]
     try:
@@ -367,11 +389,12 @@ def _run_yt_dlp(url: str, folder: str, quality: str) -> Optional[list[str]]:
             "--extractor-args", "youtube:player_client=ios,android,web",
             "--add-header", "User-Agent:com.google.ios.youtube/19.29.1 CFNetwork/1408.0.4 Darwin/22.5.0",
         ]
+        if os.path.exists(YT_COOKIES_FILE):
+            cmd += ["--cookies", YT_COOKIES_FILE]
     else:
         cmd += ["--add-header", f"User-Agent:{_BROWSER_UA}"]
-
-    if os.path.exists(COOKIES_FILE):
-        cmd += ["--cookies", COOKIES_FILE]
+        if os.path.exists(COOKIES_FILE):
+            cmd += ["--cookies", COOKIES_FILE]
     if PROXY:
         cmd += ["--proxy", PROXY]
 
@@ -818,6 +841,12 @@ async def main():
         _write_tiktok_cookies(tt_session)
     elif os.path.exists(COOKIES_FILE):
         logger.info("cookies.txt найден: %s", COOKIES_FILE)
+
+    yt_cookies_b64 = os.getenv("YT_COOKIES_B64", "").strip()
+    if yt_cookies_b64:
+        _write_youtube_cookies(yt_cookies_b64)
+    elif os.path.exists(YT_COOKIES_FILE):
+        logger.info("yt_cookies.txt найден")
 
     ver = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True)
     logger.info("yt-dlp версия: %s", ver.stdout.strip())
