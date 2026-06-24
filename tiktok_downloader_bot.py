@@ -291,16 +291,70 @@ def _tiktok_direct_url(url: str) -> Optional[tuple[str, str]]:
     return _tikwm_abs(play), _tikwm_abs(cover)
 
 
-# ── YouTube через cobalt.tools ────────────────────────────────────────────────
-# YouTube блокирует IP дата-центров ("Sign in to confirm you're not a bot").
-# cobalt.tools — опенсорс-сервис, резолвит видео со своих IP и отдаёт прямой mp4.
+# ── YouTube ───────────────────────────────────────────────────────────────────
+# YouTube блокирует IP дата-центров. Пробуем три метода по очереди:
+# 1) yt-dlp с tv_embedded/ios клиентами (не требуют авторизации)
+# 2) cobalt.tools API
+# 3) Invidious публичные инстансы
 
-COBALT_API = "https://api.cobalt.tools/"
-_YT_QUALITY = {"hd": "1080", "sd": "480"}
-COBALT_RETRIES      = 3
-COBALT_MIN_INTERVAL = 2.0   # cobalt public API: ~20 req/min, берём с запасом
-_cobalt_lock = threading.Lock()
-_cobalt_last = 0.0
+def _youtube_video_id(url: str) -> Optional[str]:
+    m = re.search(r"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else None
+
+
+def _clean_youtube_url(url: str) -> str:
+    """Убирает tracking/sharing параметры, оставляет только video ID."""
+    vid = _youtube_video_id(url)
+    if not vid:
+        return url
+    if "/shorts/" in url:
+        return f"https://www.youtube.com/shorts/{vid}"
+    return f"https://www.youtube.com/watch?v={vid}"
+
+
+# ── Метод 1: yt-dlp с embedded/app клиентами ──────────────────────────────────
+
+def _ytdlp_youtube(url: str, folder: str, quality: str) -> Optional[list[str]]:
+    """yt-dlp с клиентами tv_embedded/ios — они не требуют Sign In на публичных видео."""
+    if quality == "hd":
+        fmt = "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/22/18/best[ext=mp4]/best"
+    else:
+        fmt = "18/bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/worst[ext=mp4]/worst"
+    cmd = [
+        "yt-dlp", url,
+        "-o", os.path.join(folder, "%(autonumber)04d.%(ext)s"),
+        "--no-warnings", "--no-playlist",
+        "-f", fmt,
+        "--merge-output-format", "mp4",
+        "--extractor-args", "youtube:player_client=tv_embedded,ios,web_embedded",
+        "--socket-timeout", "30",
+        "--retries", "2",
+        "--no-part",
+    ]
+    if PROXY:
+        cmd += ["--proxy", PROXY]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=DL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        logger.warning("yt-dlp YouTube таймаут: %s", url)
+        return None
+    if res.returncode != 0:
+        logger.warning("yt-dlp YouTube failed: %s", res.stderr[-300:])
+        return None
+    files = sorted(
+        os.path.join(folder, f) for f in os.listdir(folder)
+        if f.lower().endswith(IMAGE_EXTS + VIDEO_EXTS)
+    )
+    return files or None
+
+
+# ── Метод 2: cobalt.tools ─────────────────────────────────────────────────────
+
+COBALT_API          = "https://api.cobalt.tools/"
+_YT_QUALITY         = {"hd": "1080", "sd": "480"}
+COBALT_MIN_INTERVAL = 2.0
+_cobalt_lock        = threading.Lock()
+_cobalt_last        = 0.0
 
 
 def _cobalt_gate() -> None:
@@ -312,101 +366,87 @@ def _cobalt_gate() -> None:
         _cobalt_last = time.monotonic()
 
 
-def _cobalt_fetch(url: str, quality: str = "hd", timeout: int = 30) -> Optional[str]:
-    """Возвращает прямую ссылку на mp4 через cobalt API или None."""
+def _cobalt_fetch(url: str, quality: str = "hd", timeout: int = 25) -> Optional[str]:
+    _cobalt_gate()
     payload = json.dumps({
         "url": url,
         "videoQuality": _YT_QUALITY.get(quality, "720"),
         "youtubeVideoCodec": "h264",
-        "filenameStyle": "basic",
         "downloadMode": "auto",
+        "filenameStyle": "basic",
     }).encode()
-    for attempt in range(COBALT_RETRIES):
-        _cobalt_gate()
-        req = urllib.request.Request(
-            COBALT_API, data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": _BROWSER_UA,
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            body = e.read().decode(errors="replace")[:300]
-            logger.warning("cobalt HTTP %s [%s]: %s", e.code, url, body)
-            if attempt < COBALT_RETRIES - 1:
-                time.sleep(2.0 * (attempt + 1))
-            continue
-        except Exception as e:
-            logger.warning("cobalt запрос не удался [%s]: %s", url, e)
-            if attempt < COBALT_RETRIES - 1:
-                time.sleep(2.0 * (attempt + 1))
-            continue
+    req = urllib.request.Request(
+        COBALT_API, data=payload,
+        headers={"Content-Type": "application/json", "Accept": "application/json",
+                 "User-Agent": _BROWSER_UA},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
         status = data.get("status")
         if status in ("tunnel", "redirect", "stream"):
             return data.get("url")
         logger.warning("cobalt status=%s error=%s", status, data.get("error"))
-        if attempt < COBALT_RETRIES - 1:
-            time.sleep(2.0 * (attempt + 1))
+    except urllib.error.HTTPError as e:
+        logger.warning("cobalt HTTP %s: %s", e.code, e.read().decode(errors="replace")[:200])
+    except Exception as e:
+        logger.warning("cobalt ошибка: %s", e)
     return None
 
 
-def _youtube_video_id(url: str) -> Optional[str]:
-    m = re.search(r"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})", url)
-    return m.group(1) if m else None
+# ── Метод 3: Invidious ────────────────────────────────────────────────────────
 
-
-def _clean_youtube_url(url: str) -> str:
-    """Оставляет только video ID, убирая sharing/referral параметры."""
-    vid = _youtube_video_id(url)
-    if not vid:
-        return url
-    if "/shorts/" in url:
-        return f"https://www.youtube.com/shorts/{vid}"
-    return f"https://www.youtube.com/watch?v={vid}"
-
-
-# Публичные Invidious-инстансы как fallback если cobalt недоступен
 _INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
     "https://invidious.privacyredirect.com",
     "https://yt.cdaut.de",
 ]
-# itag 18 = 360p mp4+audio, 22 = 720p mp4+audio
-_INVIDIOUS_ITAGS = {"hd": "22", "sd": "18"}
+_INVIDIOUS_ITAGS = {"hd": "22", "sd": "18"}  # 22=720p mp4+audio, 18=360p mp4+audio
 
 
-def _invidious_fetch(vid: str, quality: str) -> Optional[str]:
-    """Возвращает прокси-ссылку на mp4 через Invidious или None."""
+def _invidious_url(vid: str, quality: str) -> Optional[str]:
     itag = _INVIDIOUS_ITAGS.get(quality, "18")
     for instance in _INVIDIOUS_INSTANCES:
         url = f"{instance}/latest_version?id={vid}&itag={itag}&local=true"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
-            # HEAD-запрос чтобы проверить что инстанс живой и видео отдаётся
             req.get_method = lambda: "HEAD"
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with urllib.request.urlopen(req, timeout=6) as resp:
                 if resp.status == 200:
+                    logger.info("Invidious OK: %s", instance)
                     return url
-        except Exception as e:
-            logger.debug("Invidious %s недоступен: %s", instance, e)
+        except Exception:
+            pass
     return None
+
+
+# ── Публичный интерфейс ───────────────────────────────────────────────────────
+
+def _yt_resolve_url(vid: str, url: str, quality: str) -> Optional[str]:
+    """cobalt → Invidious: возвращает прямую ссылку для скачивания/инлайна."""
+    clean = _clean_youtube_url(url)
+    result = _cobalt_fetch(clean, quality)
+    if result:
+        return result
+    logger.info("cobalt не сработал, пробуем Invidious для %s", vid)
+    return _invidious_url(vid, quality)
 
 
 def _download_youtube(url: str, folder: str, quality: str) -> Optional[list[str]]:
     os.makedirs(folder, exist_ok=True)
-    clean = _clean_youtube_url(url)
     vid = _youtube_video_id(url)
+    clean = _clean_youtube_url(url)
 
-    video_url = _cobalt_fetch(clean, quality)
-    if not video_url and vid:
-        logger.info("cobalt не сработал, пробуем Invidious для %s", vid)
-        video_url = _invidious_fetch(vid, quality)
+    # 1. yt-dlp с embedded клиентами
+    files = _ytdlp_youtube(clean, folder, quality)
+    if files:
+        return files
 
+    logger.info("yt-dlp YouTube не сработал, пробуем внешние сервисы")
+
+    # 2/3. cobalt или Invidious → скачиваем файл сами
+    video_url = _yt_resolve_url(vid, url, quality) if vid else None
     if not video_url:
         return None
     path = os.path.join(folder, "0001.mp4")
@@ -420,16 +460,14 @@ def _download_youtube(url: str, folder: str, quality: str) -> Optional[list[str]
 
 
 def _youtube_direct_url(url: str) -> Optional[tuple[str, str]]:
-    clean = _clean_youtube_url(url)
     vid = _youtube_video_id(url)
-
-    video_url = _cobalt_fetch(clean, "hd", timeout=15)
-    if not video_url and vid:
-        video_url = _invidious_fetch(vid, "hd")
-
+    if not vid:
+        return None
+    # Для инлайна нужен прямой URL — yt-dlp не подходит
+    video_url = _yt_resolve_url(vid, url, "hd")
     if not video_url:
         return None
-    thumb = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg" if vid else video_url
+    thumb = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
     return video_url, thumb
 
 
